@@ -62,6 +62,31 @@ type installConfig struct {
 	AppID              string `json:"app_id"`
 	RobotCode          string `json:"robot_code,omitempty"`
 	AppSecretEncrypted string `json:"app_secret_encrypted"`
+	// AllowUnboundGroupUsers lets explicitly addressed group messages use a
+	// workspace member as their Multica actor when the DingTalk sender has no
+	// account binding. Direct messages always keep the normal binding gate.
+	AllowUnboundGroupUsers bool   `json:"allow_unbound_group_users,omitempty"`
+	GuestActorUserID       string `json:"guest_actor_user_id,omitempty"`
+}
+
+// GroupAccessConfig is the non-secret group-access portion of an installation
+// config. It is safe to expose through the management API.
+type GroupAccessConfig struct {
+	AllowUnboundGroupUsers bool
+	GuestActorUserID       string
+}
+
+// DecodeGroupAccessConfig reads only the non-secret access fields and fails
+// closed when an older or malformed installation config is encountered.
+func DecodeGroupAccessConfig(raw json.RawMessage) GroupAccessConfig {
+	var cfg installConfig
+	if len(raw) == 0 || json.Unmarshal(raw, &cfg) != nil {
+		return GroupAccessConfig{}
+	}
+	return GroupAccessConfig{
+		AllowUnboundGroupUsers: cfg.AllowUnboundGroupUsers,
+		GuestActorUserID:       strings.TrimSpace(cfg.GuestActorUserID),
+	}
 }
 
 // robotCodeOrAppID returns the explicit robot_code, falling back to app_id for

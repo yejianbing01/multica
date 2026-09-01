@@ -15,6 +15,14 @@ import {
 } from "@multica/ui/components/ui/dialog";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import { Switch } from "@multica/ui/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +57,7 @@ import type {
   DingTalkGroup,
   DingTalkGroupBot,
   DingTalkInstallation,
+  MemberWithUser,
 } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { openExternal } from "../../platform";
@@ -525,6 +534,7 @@ export function DingTalkTab() {
     ...dingtalkInstallationsOptions(wsId),
   });
   const installations = data?.installations ?? [];
+  const groupAccessSupported = data?.group_access_supported === true;
   const { data: visibleAgents = [], isLoading: agentsLoading } = useQuery({
     ...agentListOptions(wsId),
     enabled: !canManage && !!wsId,
@@ -635,6 +645,8 @@ export function DingTalkTab() {
                     workspaceId={wsId}
                     installation={inst}
                     canManage={canManage}
+                    groupAccessSupported={groupAccessSupported}
+                    members={members}
                     onDisconnect={() => setDisconnectTarget(inst.id)}
                     groups={groupsData?.groups ?? []}
                     botIdentity={groupsData?.bot_identities?.[inst.id]}
@@ -687,6 +699,8 @@ function InstallationRow({
   workspaceId,
   installation,
   canManage,
+  groupAccessSupported,
+  members,
   onDisconnect,
   groups,
   botIdentity: suppliedBotIdentity,
@@ -700,6 +714,8 @@ function InstallationRow({
   workspaceId: string;
   installation: DingTalkInstallation;
   canManage: boolean;
+  groupAccessSupported: boolean;
+  members: MemberWithUser[];
   onDisconnect: () => void;
   groups: DingTalkGroup[];
   botIdentity?: DingTalkGroupBot;
@@ -782,6 +798,13 @@ function InstallationRow({
           </Button>
         )}
       </div>
+      {canManage && isActive && groupAccessSupported && (
+        <DingTalkGroupAccessControl
+          workspaceId={workspaceId}
+          installation={installation}
+          members={members}
+        />
+      )}
       {isActive && showGroupDiscovery && (
         <DingTalkBotGroups
           workspaceId={workspaceId}
@@ -796,6 +819,106 @@ function InstallationRow({
           className="space-y-3 pt-5"
         />
       )}
+    </div>
+  );
+}
+
+function DingTalkGroupAccessControl({
+  workspaceId,
+  installation,
+  members,
+}: {
+  workspaceId: string;
+  installation: DingTalkInstallation;
+  members: MemberWithUser[];
+}) {
+  const { t } = useT("settings");
+  const qc = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const enabled = installation.allow_unbound_group_users === true;
+  const selectedActor =
+    installation.guest_actor_user_id ||
+    (members.some((member) => member.user_id === installation.installer_user_id)
+      ? installation.installer_user_id
+      : members[0]?.user_id ?? "");
+
+  async function save(nextEnabled: boolean, guestActorUserId: string) {
+    if (saving || !guestActorUserId) return;
+    setSaving(true);
+    try {
+      await api.updateDingTalkGroupAccess(workspaceId, installation.id, {
+        enabled: nextEnabled,
+        guest_actor_user_id: guestActorUserId,
+      });
+      await qc.invalidateQueries({ queryKey: dingtalkKeys.installations(workspaceId) });
+      toast.success(t(($) => $.dingtalk.group_access_saved));
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.dingtalk.group_access_save_failed),
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const memberItems = members.map((member) => ({
+    value: member.user_id,
+    label: member.name || member.email,
+  }));
+
+  return (
+    <div
+      className="mt-5 space-y-3 rounded-lg bg-muted/40 p-4"
+      data-testid="dingtalk-group-access"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <Label htmlFor={`dingtalk-group-access-${installation.id}`}>
+            {t(($) => $.dingtalk.group_access_title)}
+          </Label>
+          <p className="max-w-2xl text-caption leading-relaxed text-muted-foreground">
+            {t(($) => $.dingtalk.group_access_description)}
+          </p>
+        </div>
+        <Switch
+          id={`dingtalk-group-access-${installation.id}`}
+          checked={enabled}
+          disabled={saving || !selectedActor}
+          onCheckedChange={(checked) => void save(checked, selectedActor)}
+          aria-label={t(($) => $.dingtalk.group_access_title)}
+        />
+      </div>
+      <div className="max-w-sm space-y-1.5">
+        <Label htmlFor={`dingtalk-guest-actor-${installation.id}`}>
+          {t(($) => $.dingtalk.group_access_actor_label)}
+        </Label>
+        <Select
+          items={memberItems}
+          value={selectedActor}
+          onValueChange={(value) => {
+            if (value) void save(enabled, value);
+          }}
+        >
+          <SelectTrigger
+            id={`dingtalk-guest-actor-${installation.id}`}
+            disabled={saving || members.length === 0}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {members.map((member) => (
+              <SelectItem key={member.user_id} value={member.user_id}>
+                {member.name || member.email}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-micro leading-relaxed text-muted-foreground">
+          {t(($) => $.dingtalk.group_access_actor_hint)}
+        </p>
+      </div>
     </div>
   );
 }

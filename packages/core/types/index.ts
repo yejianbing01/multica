@@ -232,6 +232,7 @@ export type {
   ListDingTalkGroupsResponse,
   ListDingTalkGroupsParams,
   RegisterDingTalkBYORequest,
+  UpdateDingTalkGroupAccessRequest,
   RedeemDingTalkBindingTokenResponse,
 } from "./dingtalk";
 export type {

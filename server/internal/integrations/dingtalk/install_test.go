@@ -64,6 +64,8 @@ type fakeInstallQueries struct {
 	ownerWorkspaceID pgtype.UUID
 	ownerArchived    bool
 	ownerMissing     bool
+	memberErr        error
+	groupAccess      db.SetDingTalkGroupAccessParams
 }
 
 // WithTx returns the same fake — the fake tx is a no-op token.
@@ -138,8 +140,50 @@ func (f *fakeInstallQueries) GetChannelInstallationInWorkspace(_ context.Context
 	return db.ChannelInstallation{}, nil
 }
 
+func (f *fakeInstallQueries) GetMemberByUserAndWorkspace(_ context.Context, _ db.GetMemberByUserAndWorkspaceParams) (db.Member, error) {
+	if f.memberErr != nil {
+		return db.Member{}, f.memberErr
+	}
+	return db.Member{}, nil
+}
+
+func (f *fakeInstallQueries) SetDingTalkGroupAccess(_ context.Context, arg db.SetDingTalkGroupAccessParams) (db.ChannelInstallation, error) {
+	f.groupAccess = arg
+	return db.ChannelInstallation{ID: arg.InstallationID, WorkspaceID: arg.WorkspaceID}, nil
+}
+
 func (f *fakeInstallQueries) SetChannelInstallationStatus(_ context.Context, _ db.SetChannelInstallationStatusParams) error {
 	return nil
+}
+
+func TestInstallServiceSetGroupAccessRequiresWorkspaceMemberWhenEnabling(t *testing.T) {
+	q := &fakeInstallQueries{memberErr: pgx.ErrNoRows}
+	svc := newTestInstallService(t, q)
+	installationID := mustUUID(t, "11111111-1111-1111-1111-111111111111")
+	workspaceID := mustUUID(t, "22222222-2222-2222-2222-222222222222")
+	actorID := mustUUID(t, "33333333-3333-3333-3333-333333333333")
+
+	if _, err := svc.SetGroupAccess(context.Background(), installationID, workspaceID, actorID, true); err == nil {
+		t.Fatal("expected a non-member guest actor to be rejected")
+	}
+	if q.groupAccess.InstallationID.Valid {
+		t.Fatal("rejected guest actor must not update installation config")
+	}
+}
+
+func TestInstallServiceSetGroupAccessPersistsSelectedActor(t *testing.T) {
+	q := &fakeInstallQueries{}
+	svc := newTestInstallService(t, q)
+	installationID := mustUUID(t, "11111111-1111-1111-1111-111111111111")
+	workspaceID := mustUUID(t, "22222222-2222-2222-2222-222222222222")
+	actorID := mustUUID(t, "33333333-3333-3333-3333-333333333333")
+
+	if _, err := svc.SetGroupAccess(context.Background(), installationID, workspaceID, actorID, true); err != nil {
+		t.Fatalf("SetGroupAccess: %v", err)
+	}
+	if !q.groupAccess.AllowUnboundGroupUsers || q.groupAccess.GuestActorUserID != util.UUIDToString(actorID) {
+		t.Fatalf("group access params = %+v", q.groupAccess)
+	}
 }
 
 // fakeTx is a no-op pgx.Tx: embedding the interface satisfies it, and the

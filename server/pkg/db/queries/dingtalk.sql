@@ -39,6 +39,27 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND channel_type = 'dingtalk'
 FOR UPDATE;
 
+-- name: SetDingTalkGroupAccess :one
+-- Enables or disables the explicit group-only fallback for unbound DingTalk
+-- senders without replacing the encrypted robot credentials in config.
+UPDATE channel_installation
+SET config = jsonb_set(
+        jsonb_set(
+            config,
+            '{allow_unbound_group_users}',
+            to_jsonb(sqlc.arg(allow_unbound_group_users)::boolean),
+            true
+        ),
+        '{guest_actor_user_id}',
+        to_jsonb(sqlc.arg(guest_actor_user_id)::text),
+        true
+    ),
+    updated_at = now()
+WHERE id = sqlc.arg(installation_id)
+  AND workspace_id = sqlc.arg(workspace_id)
+  AND channel_type = 'dingtalk'
+RETURNING *;
+
 -- name: UpsertDingTalkBotIdentity :one
 -- Bot identity and the optional permission issue belong to the installation,
 -- not to any one group. Keep this as a separate command so the mixed-version

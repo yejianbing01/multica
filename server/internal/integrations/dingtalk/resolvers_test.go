@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
@@ -25,6 +26,64 @@ type fakeGroupPresenceQueries struct {
 	activityCalls  int
 	activityParams db.RecordDingTalkGroupActivityParams
 	activityErr    error
+}
+
+type fakeIdentityQueries struct {
+	binding    db.ChannelUserBinding
+	bindingErr error
+	memberErr  error
+	memberArg  db.GetMemberByUserAndWorkspaceParams
+}
+
+func (f *fakeIdentityQueries) GetChannelUserBindingByUserID(context.Context, db.GetChannelUserBindingByUserIDParams) (db.ChannelUserBinding, error) {
+	return f.binding, f.bindingErr
+}
+
+func (f *fakeIdentityQueries) GetMemberByUserAndWorkspace(_ context.Context, arg db.GetMemberByUserAndWorkspaceParams) (db.Member, error) {
+	f.memberArg = arg
+	if f.memberErr != nil {
+		return db.Member{}, f.memberErr
+	}
+	return db.Member{}, nil
+}
+
+func TestIdentityResolverAllowsConfiguredUnboundGroupSender(t *testing.T) {
+	actorID := mustUUID(t, "11111111-1111-1111-1111-111111111111")
+	workspaceID := mustUUID(t, "22222222-2222-2222-2222-222222222222")
+	queries := &fakeIdentityQueries{bindingErr: pgx.ErrNoRows}
+	resolver := identityResolver{q: queries}
+	identity, err := resolver.ResolveSender(context.Background(), engine.ResolvedInstallation{
+		WorkspaceID: workspaceID,
+		Platform:    db.ChannelInstallation{Config: []byte(`{"allow_unbound_group_users":true,"guest_actor_user_id":"11111111-1111-1111-1111-111111111111"}`)},
+	}, channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeGroup, SenderID: "staff-1"}})
+	if err != nil {
+		t.Fatalf("ResolveSender: %v", err)
+	}
+	if identity.UserID != actorID || queries.memberArg.UserID != actorID || queries.memberArg.WorkspaceID != workspaceID {
+		t.Fatalf("identity/member check = %+v / %+v", identity, queries.memberArg)
+	}
+}
+
+func TestIdentityResolverKeepsDirectMessagesBehindBinding(t *testing.T) {
+	queries := &fakeIdentityQueries{bindingErr: pgx.ErrNoRows}
+	resolver := identityResolver{q: queries}
+	_, err := resolver.ResolveSender(context.Background(), engine.ResolvedInstallation{
+		Platform: db.ChannelInstallation{Config: []byte(`{"allow_unbound_group_users":true,"guest_actor_user_id":"11111111-1111-1111-1111-111111111111"}`)},
+	}, channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeP2P, SenderID: "staff-1"}})
+	if !errors.Is(err, engine.ErrSenderUnbound) {
+		t.Fatalf("direct unbound sender error = %v, want ErrSenderUnbound", err)
+	}
+}
+
+func TestIdentityResolverFailsClosedAfterGuestActorLeavesWorkspace(t *testing.T) {
+	queries := &fakeIdentityQueries{bindingErr: pgx.ErrNoRows, memberErr: pgx.ErrNoRows}
+	resolver := identityResolver{q: queries}
+	_, err := resolver.ResolveSender(context.Background(), engine.ResolvedInstallation{
+		Platform: db.ChannelInstallation{Config: []byte(`{"allow_unbound_group_users":true,"guest_actor_user_id":"11111111-1111-1111-1111-111111111111"}`)},
+	}, channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeGroup, SenderID: "staff-1"}})
+	if !errors.Is(err, engine.ErrSenderNotMember) {
+		t.Fatalf("departed guest actor error = %v, want ErrSenderNotMember", err)
+	}
 }
 
 func (f *fakeGroupPresenceQueries) UpsertDingTalkBotIdentity(_ context.Context, params db.UpsertDingTalkBotIdentityParams) (pgtype.UUID, error) {
@@ -371,7 +430,7 @@ func TestDingTalkSessionRouting_P2PCarriesStaffID(t *testing.T) {
 		ChatType: channel.ChatTypeP2P,
 		SenderID: "staff-7",
 	}}
-	key, cfg := dingtalkSessionRouting(msg)
+	key, cfg := dingtalkSessionRouting(engine.ResolvedInstallation{}, msg)
 	if key != "cid-1" {
 		t.Errorf("binding key = %q, want conversation id", key)
 	}
@@ -390,7 +449,7 @@ func TestDingTalkSessionRouting_GroupOmitsStaffID(t *testing.T) {
 		ChatType: channel.ChatTypeGroup,
 		SenderID: "staff-7",
 	}}
-	_, cfg := dingtalkSessionRouting(msg)
+	_, cfg := dingtalkSessionRouting(engine.ResolvedInstallation{}, msg)
 	var dc dingtalkBindingConfig
 	_ = json.Unmarshal(cfg, &dc)
 	if dc.ConversationType != convTypeGroup || dc.StaffID != "" {
@@ -399,7 +458,7 @@ func TestDingTalkSessionRouting_GroupOmitsStaffID(t *testing.T) {
 }
 
 func TestOutboundTarget_RoundTripsBindingConfig(t *testing.T) {
-	_, cfg := dingtalkSessionRouting(channel.InboundMessage{Source: channel.Source{
+	_, cfg := dingtalkSessionRouting(engine.ResolvedInstallation{}, channel.InboundMessage{Source: channel.Source{
 		ChatID:   "cid-3",
 		ChatType: channel.ChatTypeP2P,
 		SenderID: "staff-3",
@@ -407,6 +466,28 @@ func TestOutboundTarget_RoundTripsBindingConfig(t *testing.T) {
 	target := outboundTarget(db.ChannelChatSessionBinding{ChannelChatID: "cid-3", Config: cfg})
 	if target.ConversationType != convTypeP2P || target.StaffID != "staff-3" || target.ConversationID != "cid-3" {
 		t.Errorf("round-tripped target = %+v", target)
+	}
+}
+
+func TestDingTalkSessionRouting_GroupAccessIsolatesEachSender(t *testing.T) {
+	config := []byte(`{"allow_unbound_group_users":true,"guest_actor_user_id":"11111111-1111-1111-1111-111111111111"}`)
+	inst := engine.ResolvedInstallation{Platform: db.ChannelInstallation{Config: config}}
+	message := func(sender string) channel.InboundMessage {
+		return channel.InboundMessage{Source: channel.Source{
+			ChatID: "cid-group", ChatType: channel.ChatTypeGroup, SenderID: sender,
+		}}
+	}
+	firstKey, firstConfig := dingtalkSessionRouting(inst, message("staff-a"))
+	secondKey, _ := dingtalkSessionRouting(inst, message("staff-b"))
+	if firstKey == secondKey || firstKey == "cid-group" || secondKey == "cid-group" {
+		t.Fatalf("sender-isolated keys = %q / %q", firstKey, secondKey)
+	}
+	var routing dingtalkBindingConfig
+	if err := json.Unmarshal(firstConfig, &routing); err != nil {
+		t.Fatal(err)
+	}
+	if routing.ConversationID != "cid-group" || routing.ConversationType != convTypeGroup {
+		t.Fatalf("outbound routing = %+v", routing)
 	}
 }
 

@@ -185,6 +185,7 @@ import type {
   ListDingTalkGroupsResponse,
   ListDingTalkGroupsParams,
   RegisterDingTalkBYORequest,
+  UpdateDingTalkGroupAccessRequest,
   RedeemDingTalkBindingTokenResponse,
   WecomInstallation,
   ListWecomInstallationsResponse,
@@ -4587,6 +4588,23 @@ export class ApiClient {
   async deleteDingTalkInstallation(workspaceId: string, installationId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/dingtalk/installations/${installationId}`, {
       method: "DELETE",
+    });
+  }
+
+  async updateDingTalkGroupAccess(
+    workspaceId: string,
+    installationId: string,
+    body: UpdateDingTalkGroupAccessRequest,
+  ): Promise<DingTalkInstallation> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/dingtalk/installations/${installationId}/group-access`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      },
+    );
+    return parseWithFallback(raw, DingTalkInstallationSchema, EMPTY_DINGTALK_INSTALLATION, {
+      endpoint: "PATCH /api/workspaces/:id/dingtalk/installations/:id/group-access",
     });
   }
 

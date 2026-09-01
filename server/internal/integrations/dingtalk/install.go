@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -57,6 +58,8 @@ type installQueries interface {
 	GetChannelInstallationOwnerByAppID(ctx context.Context, arg db.GetChannelInstallationOwnerByAppIDParams) (db.GetChannelInstallationOwnerByAppIDRow, error)
 	ListChannelInstallationsByWorkspace(ctx context.Context, arg db.ListChannelInstallationsByWorkspaceParams) ([]db.ChannelInstallation, error)
 	GetChannelInstallationInWorkspace(ctx context.Context, arg db.GetChannelInstallationInWorkspaceParams) (db.ChannelInstallation, error)
+	GetMemberByUserAndWorkspace(ctx context.Context, arg db.GetMemberByUserAndWorkspaceParams) (db.Member, error)
+	SetDingTalkGroupAccess(ctx context.Context, arg db.SetDingTalkGroupAccessParams) (db.ChannelInstallation, error)
 	SetChannelInstallationStatus(ctx context.Context, arg db.SetChannelInstallationStatusParams) error
 }
 
@@ -281,5 +284,32 @@ func (s *InstallService) Revoke(ctx context.Context, id pgtype.UUID) error {
 	return s.q.SetChannelInstallationStatus(ctx, db.SetChannelInstallationStatusParams{
 		ID:     id,
 		Status: "revoked",
+	})
+}
+
+// SetGroupAccess configures the workspace member used to run explicitly
+// addressed group messages from unbound DingTalk users. Membership is checked
+// at write time and re-checked for every inbound message by identityResolver.
+func (s *InstallService) SetGroupAccess(
+	ctx context.Context,
+	installationID, workspaceID, guestActorUserID pgtype.UUID,
+	allowUnboundGroupUsers bool,
+) (db.ChannelInstallation, error) {
+	if allowUnboundGroupUsers {
+		if _, err := s.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+			UserID:      guestActorUserID,
+			WorkspaceID: workspaceID,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return db.ChannelInstallation{}, engine.ErrSenderNotMember
+			}
+			return db.ChannelInstallation{}, fmt.Errorf("verify dingtalk guest actor membership: %w", err)
+		}
+	}
+	return s.q.SetDingTalkGroupAccess(ctx, db.SetDingTalkGroupAccessParams{
+		InstallationID:         installationID,
+		WorkspaceID:            workspaceID,
+		AllowUnboundGroupUsers: allowUnboundGroupUsers,
+		GuestActorUserID:       util.UUIDToString(guestActorUserID),
 	})
 }

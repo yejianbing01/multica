@@ -2,6 +2,7 @@ package dingtalk
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -82,11 +84,11 @@ type dingtalkBindingConfig struct {
 }
 
 // dingtalkSessionRouting derives the session-isolation key and the outbound
-// routing config from one inbound message. DingTalk has no threads, so a
-// conversation (1:1 or group) is one continuous session keyed by its
-// conversation id; the config carries everything the outbound path needs to send
-// back.
-func dingtalkSessionRouting(msg channel.InboundMessage) (bindingKey string, config []byte) {
+// routing config from one inbound message. Normal DingTalk conversations are
+// keyed by conversation id. An installation that admits unbound group members
+// adds the sender staff id to the key so group members cannot share agent
+// context; the real conversation id remains in config for outbound delivery.
+func dingtalkSessionRouting(inst engine.ResolvedInstallation, msg channel.InboundMessage) (bindingKey string, config []byte) {
 	chatID := msg.Source.ChatID
 	cfg := dingtalkBindingConfig{
 		ConversationType: convTypeGroup,
@@ -95,6 +97,12 @@ func dingtalkSessionRouting(msg channel.InboundMessage) (bindingKey string, conf
 	if msg.Source.ChatType == channel.ChatTypeP2P {
 		cfg.ConversationType = convTypeP2P
 		cfg.StaffID = msg.Source.SenderID
+	} else if installation, ok := inst.Platform.(db.ChannelInstallation); ok {
+		groupAccess := DecodeGroupAccessConfig(installation.Config)
+		if groupAccess.AllowUnboundGroupUsers && msg.Source.SenderID != "" {
+			encodedSender := base64.RawURLEncoding.EncodeToString([]byte(msg.Source.SenderID))
+			chatID += ":sender:" + encodedSender
+		}
 	}
 	raw, _ := json.Marshal(cfg)
 	return chatID, raw
@@ -172,7 +180,12 @@ func (r *installationResolver) ResolveInstallation(ctx context.Context, msg chan
 
 // ---- identity ----
 
-type identityResolver struct{ q *db.Queries }
+type identityQueries interface {
+	GetChannelUserBindingByUserID(context.Context, db.GetChannelUserBindingByUserIDParams) (db.ChannelUserBinding, error)
+	GetMemberByUserAndWorkspace(context.Context, db.GetMemberByUserAndWorkspaceParams) (db.Member, error)
+}
+
+type identityResolver struct{ q identityQueries }
 
 func (r *identityResolver) ResolveSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
 	binding, err := r.q.GetChannelUserBindingByUserID(ctx, db.GetChannelUserBindingByUserIDParams{
@@ -181,7 +194,31 @@ func (r *identityResolver) ResolveSender(ctx context.Context, inst engine.Resolv
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+			if msg.Source.ChatType != channel.ChatTypeGroup {
+				return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+			}
+			installation, ok := inst.Platform.(db.ChannelInstallation)
+			if !ok {
+				return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+			}
+			groupAccess := DecodeGroupAccessConfig(installation.Config)
+			if !groupAccess.AllowUnboundGroupUsers || groupAccess.GuestActorUserID == "" {
+				return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
+			}
+			guestActorUserID, parseErr := util.ParseUUID(groupAccess.GuestActorUserID)
+			if parseErr != nil {
+				return engine.ResolvedIdentity{}, fmt.Errorf("dingtalk: invalid guest actor user id: %w", parseErr)
+			}
+			if _, memberErr := r.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+				UserID:      guestActorUserID,
+				WorkspaceID: inst.WorkspaceID,
+			}); memberErr != nil {
+				if errors.Is(memberErr, pgx.ErrNoRows) {
+					return engine.ResolvedIdentity{}, engine.ErrSenderNotMember
+				}
+				return engine.ResolvedIdentity{}, memberErr
+			}
+			return engine.ResolvedIdentity{UserID: guestActorUserID}, nil
 		}
 		return engine.ResolvedIdentity{}, err
 	}
@@ -321,7 +358,7 @@ func (o *groupPresenceObserver) RecordActivity(ctx context.Context, installation
 }
 
 func (r *sessionBinder) StartSession(ctx context.Context, p engine.StartSessionParams) (engine.StartSessionResult, error) {
-	bindingKey, config := dingtalkSessionRouting(p.Message)
+	bindingKey, config := dingtalkSessionRouting(p.Installation, p.Message)
 	result, err := r.session.StartSession(ctx, engine.StartSessionInput{
 		EnsureSessionInput: engine.EnsureSessionInput{
 			WorkspaceID: p.Installation.WorkspaceID, AgentID: p.Installation.AgentID,
@@ -373,7 +410,7 @@ type sessionBinder struct {
 }
 
 func (r *sessionBinder) EnsureSession(ctx context.Context, p engine.EnsureSessionParams) (pgtype.UUID, error) {
-	bindingKey, config := dingtalkSessionRouting(p.Message)
+	bindingKey, config := dingtalkSessionRouting(p.Installation, p.Message)
 	sessionID, err := r.session.EnsureSession(ctx, engine.EnsureSessionInput{
 		WorkspaceID:    p.Installation.WorkspaceID,
 		AgentID:        p.Installation.AgentID,

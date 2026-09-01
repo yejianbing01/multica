@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -25,16 +26,18 @@ import (
 // server-internal (only the outbound sender decrypts it). WS lease columns are
 // runtime state, not API surface, so they are omitted too.
 type DingTalkInstallationResponse struct {
-	ID                   string   `json:"id"`
-	WorkspaceID          string   `json:"workspace_id"`
-	AgentID              string   `json:"agent_id"`
-	InstallerUserID      string   `json:"installer_user_id"`
-	Status               string   `json:"status"`
-	InstalledAt          string   `json:"installed_at"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
-	AgentAvailable       bool     `json:"agent_available"`
-	BoundDingTalkUserIDs []string `json:"bound_dingtalk_user_ids,omitempty"`
+	ID                     string   `json:"id"`
+	WorkspaceID            string   `json:"workspace_id"`
+	AgentID                string   `json:"agent_id"`
+	InstallerUserID        string   `json:"installer_user_id"`
+	Status                 string   `json:"status"`
+	InstalledAt            string   `json:"installed_at"`
+	CreatedAt              string   `json:"created_at"`
+	UpdatedAt              string   `json:"updated_at"`
+	AgentAvailable         bool     `json:"agent_available"`
+	BoundDingTalkUserIDs   []string `json:"bound_dingtalk_user_ids,omitempty"`
+	AllowUnboundGroupUsers bool     `json:"allow_unbound_group_users"`
+	GuestActorUserID       string   `json:"guest_actor_user_id,omitempty"`
 }
 
 // DingTalkGroupBotResponse identifies one connected Multica bot observed in a
@@ -72,16 +75,19 @@ const (
 )
 
 func dingtalkInstallationToResponse(row db.ChannelInstallation) DingTalkInstallationResponse {
+	groupAccess := dingtalk.DecodeGroupAccessConfig(row.Config)
 	return DingTalkInstallationResponse{
-		ID:              uuidToString(row.ID),
-		WorkspaceID:     uuidToString(row.WorkspaceID),
-		AgentID:         uuidToString(row.AgentID),
-		InstallerUserID: uuidToString(row.InstallerUserID),
-		Status:          row.Status,
-		InstalledAt:     row.InstalledAt.Time.UTC().Format(time.RFC3339),
-		CreatedAt:       row.CreatedAt.Time.UTC().Format(time.RFC3339),
-		UpdatedAt:       row.UpdatedAt.Time.UTC().Format(time.RFC3339),
-		AgentAvailable:  true,
+		ID:                     uuidToString(row.ID),
+		WorkspaceID:            uuidToString(row.WorkspaceID),
+		AgentID:                uuidToString(row.AgentID),
+		InstallerUserID:        uuidToString(row.InstallerUserID),
+		Status:                 row.Status,
+		InstalledAt:            row.InstalledAt.Time.UTC().Format(time.RFC3339),
+		CreatedAt:              row.CreatedAt.Time.UTC().Format(time.RFC3339),
+		UpdatedAt:              row.UpdatedAt.Time.UTC().Format(time.RFC3339),
+		AgentAvailable:         true,
+		AllowUnboundGroupUsers: groupAccess.AllowUnboundGroupUsers,
+		GuestActorUserID:       groupAccess.GuestActorUserID,
 	}
 }
 
@@ -133,9 +139,10 @@ func (h *Handler) dingtalkAgentVisibility(
 func (h *Handler) ListDingTalkInstallations(w http.ResponseWriter, r *http.Request) {
 	if h.DingTalkInstall == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"installations":     []DingTalkInstallationResponse{},
-			"configured":        false,
-			"install_supported": false,
+			"installations":          []DingTalkInstallationResponse{},
+			"configured":             false,
+			"install_supported":      false,
+			"group_access_supported": false,
 		})
 		return
 	}
@@ -200,9 +207,10 @@ func (h *Handler) ListDingTalkInstallations(w http.ResponseWriter, r *http.Reque
 		out = append(out, response)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"installations":     out,
-		"configured":        true,
-		"install_supported": true,
+		"installations":          out,
+		"configured":             true,
+		"install_supported":      true,
+		"group_access_supported": true,
 	})
 }
 
@@ -655,6 +663,88 @@ func (h *Handler) publishDingTalkInstallationCreated(row db.ChannelInstallation,
 	h.publish(protocol.EventDingTalkInstallationCreated, uuidToString(row.WorkspaceID), "user", actorID, map[string]any{
 		"id": uuidToString(row.ID),
 	})
+}
+
+// UpdateDingTalkGroupAccess enables or disables group-only access for DingTalk
+// senders without a Multica account binding. The selected guest actor must be
+// a current workspace member and becomes the audited initiator for those turns.
+func (h *Handler) UpdateDingTalkGroupAccess(w http.ResponseWriter, r *http.Request) {
+	if h.DingTalkInstall == nil {
+		writeError(w, http.StatusServiceUnavailable, "dingtalk integration not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireWorkspaceRole(
+		w, r, uuidToString(wsUUID), "dingtalk installation not found", "owner", "admin",
+	); !ok {
+		return
+	}
+	instUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "installationId"), "installation id")
+	if !ok {
+		return
+	}
+	inst, err := h.DingTalkInstall.GetInWorkspace(r.Context(), instUUID, wsUUID)
+	if err != nil {
+		if errors.Is(err, dingtalk.ErrInstallationNotFound) {
+			writeError(w, http.StatusNotFound, "dingtalk installation not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load installation")
+		return
+	}
+	agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID:          inst.AgentID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "agent not found in this workspace")
+		return
+	}
+	if !h.canManageAgent(w, r, agent) {
+		return
+	}
+	var body struct {
+		Enabled          bool   `json:"enabled"`
+		GuestActorUserID string `json:"guest_actor_user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	guestActorID := strings.TrimSpace(body.GuestActorUserID)
+	if guestActorID == "" {
+		guestActorID = userID
+	}
+	guestActorUUID, ok := parseUUIDOrBadRequest(w, guestActorID, "guest_actor_user_id")
+	if !ok {
+		return
+	}
+	if body.Enabled && !h.canInvokeAgent(
+		r.Context(), agent, "member", guestActorID, guestActorID, uuidToString(wsUUID),
+	) {
+		writeError(w, http.StatusBadRequest, "guest actor is not allowed to invoke this agent")
+		return
+	}
+	updated, err := h.DingTalkInstall.SetGroupAccess(
+		r.Context(), instUUID, wsUUID, guestActorUUID, body.Enabled,
+	)
+	if err != nil {
+		if errors.Is(err, engine.ErrSenderNotMember) {
+			writeError(w, http.StatusBadRequest, "guest actor must be a current workspace member")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to update dingtalk group access")
+		return
+	}
+	h.publishDingTalkInstallationCreated(updated, userID)
+	writeJSON(w, http.StatusOK, dingtalkInstallationToResponse(updated))
 }
 
 // RevokeDingTalkInstallation (DELETE /api/workspaces/{id}/dingtalk/installations/{installationId})

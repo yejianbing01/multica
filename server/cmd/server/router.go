@@ -1721,6 +1721,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/dingtalk/groups", h.ListDingTalkGroups)
 					r.Delete("/dingtalk/installations/{installationId}/groups/{conversationId}", h.ForgetDingTalkGroup)
 					r.Delete("/dingtalk/installations/{installationId}", h.RevokeDingTalkInstallation)
+					r.Patch("/dingtalk/installations/{installationId}/group-access", h.UpdateDingTalkGroupAccess)
 					r.Post("/dingtalk/install/byo", h.RegisterDingTalkBYO)
 				})
 

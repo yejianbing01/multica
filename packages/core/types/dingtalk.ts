@@ -20,6 +20,11 @@ export interface DingTalkInstallation {
    * this bot. Member-scoped so the member-visible installation endpoint does
    * not disclose other members' DingTalk identities. */
   bound_dingtalk_user_ids?: string[];
+  /** When true, unbound users may invoke this bot from a DingTalk group by
+   * explicitly @mentioning it. Direct messages still require account linking. */
+  allow_unbound_group_users?: boolean;
+  /** Workspace member used as the audited initiator for unbound group turns. */
+  guest_actor_user_id?: string;
 }
 
 export interface ListDingTalkInstallationsResponse {
@@ -34,6 +39,8 @@ export interface ListDingTalkInstallationsResponse {
    * compat; optional so an older desktop build that predates it treats it as
    * off. */
   install_supported?: boolean;
+  /** Whether the backend supports configuring unlinked DingTalk group access. */
+  group_access_supported?: boolean;
 }
 
 /** One connected Multica bot observed in a DingTalk group. */
@@ -88,6 +95,11 @@ export interface ListDingTalkGroupsParams {
 export interface RegisterDingTalkBYORequest {
   client_id: string;
   client_secret: string;
+}
+
+export interface UpdateDingTalkGroupAccessRequest {
+  enabled: boolean;
+  guest_actor_user_id: string;
 }
 
 /** Post-redemption echo: the DingTalk user id the token carried is now bound to

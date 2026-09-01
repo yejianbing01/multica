@@ -64,6 +64,8 @@ import {
   PluginPreviewSchema,
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
+  DingTalkInstallationSchema,
+  EMPTY_DINGTALK_INSTALLATION,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -97,6 +99,35 @@ const baseIssue = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
+
+describe("DingTalkInstallationSchema", () => {
+  const baseInstallation = {
+    id: "installation-1",
+    workspace_id: "workspace-1",
+    agent_id: "agent-1",
+    installer_user_id: "user-1",
+    status: "active",
+    installed_at: "2026-09-01T00:00:00Z",
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+  };
+
+  it("defaults group access off for an older backend", () => {
+    const parsed = DingTalkInstallationSchema.parse(baseInstallation);
+    expect(parsed.allow_unbound_group_users).toBe(false);
+    expect(parsed.guest_actor_user_id).toBe("");
+  });
+
+  it("fails closed on malformed group access fields", () => {
+    const parsed = parseWithFallback(
+      { ...baseInstallation, allow_unbound_group_users: "yes" },
+      DingTalkInstallationSchema,
+      EMPTY_DINGTALK_INSTALLATION,
+      { endpoint: "PATCH /api/workspaces/:id/dingtalk/installations/:id/group-access" },
+    );
+    expect(parsed).toEqual(EMPTY_DINGTALK_INSTALLATION);
+  });
+});
 
 describe("ChatSessionSchema", () => {
   const baseSession = {

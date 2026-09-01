@@ -9,9 +9,23 @@ import enCommon from "../../locales/en/common.json";
 import enSettings from "../../locales/en/settings.json";
 
 type MemberRole = "owner" | "admin" | "member";
+type MemberFixture = {
+  user_id: string;
+  role: MemberRole;
+  name?: string;
+  email?: string;
+};
+type InstallationListingFixture = {
+  installations: unknown[];
+  configured: boolean;
+  install_supported: boolean;
+  group_access_supported?: boolean;
+};
 
 const membersRef = vi.hoisted(() => ({
-  current: [{ user_id: "user-1", role: "owner" as MemberRole }],
+  current: [
+    { user_id: "user-1", role: "owner" as MemberRole, name: "Owner", email: "owner@example.com" },
+  ] as MemberFixture[],
 }));
 const agentsRef = vi.hoisted(() => ({
   current: [
@@ -25,7 +39,7 @@ const installationsRef = vi.hoisted(() => ({
     installations: [] as unknown[],
     configured: true,
     install_supported: true,
-  },
+  } as InstallationListingFixture,
 }));
 const groupsRef = vi.hoisted(() => ({
   current: {
@@ -53,6 +67,7 @@ const inactiveGroupsRef = vi.hoisted(() => ({
 }));
 const mockRegisterBYO = vi.hoisted(() => vi.fn());
 const mockDeleteInstallation = vi.hoisted(() => vi.fn());
+const mockUpdateGroupAccess = vi.hoisted(() => vi.fn());
 const mockOpenExternal = vi.hoisted(() => vi.fn());
 const mockInvalidate = vi.hoisted(() => vi.fn());
 
@@ -128,6 +143,7 @@ vi.mock("@multica/core/api", () => ({
   api: {
     registerDingTalkBYO: mockRegisterBYO,
     deleteDingTalkInstallation: mockDeleteInstallation,
+    updateDingTalkGroupAccess: mockUpdateGroupAccess,
     forgetDingTalkGroup: vi.fn(),
   },
 }));
@@ -163,7 +179,9 @@ function renderUI(children: ReactNode) {
 
 function resetFixtures() {
   vi.clearAllMocks();
-  membersRef.current = [{ user_id: "user-1", role: "owner" }];
+  membersRef.current = [
+    { user_id: "user-1", role: "owner", name: "Owner", email: "owner@example.com" },
+  ];
   agentsRef.current = [
     { id: "agent-1" },
     { id: "agent-7" },
@@ -377,6 +395,39 @@ describe("DingTalkTab", () => {
     };
     renderUI(<DingTalkTab />);
     expect(screen.queryByText(/Linked staff ID:/i)).toBeNull();
+  });
+
+  it("enables unlinked group access with the selected service account", async () => {
+    membersRef.current = [
+      { user_id: "user-1", role: "owner", name: "Owner", email: "owner@example.com" },
+      { user_id: "service-1", role: "member", name: "DingTalk Service", email: "bot@example.com" },
+    ];
+    installationsRef.current = {
+      installations: [{
+        id: "i1",
+        agent_id: "agent-7",
+        installer_user_id: "service-1",
+        guest_actor_user_id: "service-1",
+        allow_unbound_group_users: false,
+        status: "active",
+      }],
+      configured: true,
+      install_supported: true,
+      group_access_supported: true,
+    };
+    mockUpdateGroupAccess.mockResolvedValue({ id: "i1" });
+    renderUI(<DingTalkTab />);
+
+    await userEvent.click(screen.getByRole("switch", {
+      name: enSettings.dingtalk.group_access_title,
+    }));
+
+    await waitFor(() => {
+      expect(mockUpdateGroupAccess).toHaveBeenCalledWith("workspace-1", "i1", {
+        enabled: true,
+        guest_actor_user_id: "service-1",
+      });
+    });
   });
 
   it("hides linked DingTalk identities from a regular workspace member", () => {

@@ -2984,6 +2984,8 @@ export const DingTalkInstallationSchema = z.object({
   updated_at: z.string().default(""),
   agent_available: z.boolean().optional(),
   bound_dingtalk_user_ids: z.array(z.string()).catch([]).default([]),
+  allow_unbound_group_users: z.boolean().optional().default(false),
+  guest_actor_user_id: z.string().optional().default(""),
 }).loose();
 
 export const EMPTY_DINGTALK_INSTALLATION: DingTalkInstallation = {
@@ -2996,17 +2998,21 @@ export const EMPTY_DINGTALK_INSTALLATION: DingTalkInstallation = {
   created_at: "",
   updated_at: "",
   bound_dingtalk_user_ids: [],
+  allow_unbound_group_users: false,
+  guest_actor_user_id: "",
 };
 
 export const ListDingTalkInstallationsResponseSchema = z.object({
   installations: z.array(DingTalkInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
+  group_access_supported: z.boolean().optional().default(false),
 }).loose();
 
 export const EMPTY_LIST_DINGTALK_INSTALLATIONS_RESPONSE: ListDingTalkInstallationsResponse = {
   installations: [],
   configured: false,
+  group_access_supported: false,
 };
 
 export const DingTalkGroupBotSchema = z.object({

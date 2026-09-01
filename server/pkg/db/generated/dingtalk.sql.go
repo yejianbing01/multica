@@ -521,6 +521,60 @@ func (q *Queries) RecordDingTalkGroupPresence(ctx context.Context, arg RecordDin
 	return id, err
 }
 
+const setDingTalkGroupAccess = `-- name: SetDingTalkGroupAccess :one
+UPDATE channel_installation
+SET config = jsonb_set(
+        jsonb_set(
+            config,
+            '{allow_unbound_group_users}',
+            to_jsonb($1::boolean),
+            true
+        ),
+        '{guest_actor_user_id}',
+        to_jsonb($2::text),
+        true
+    ),
+    updated_at = now()
+WHERE id = $3
+  AND workspace_id = $4
+  AND channel_type = 'dingtalk'
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
+`
+
+type SetDingTalkGroupAccessParams struct {
+	AllowUnboundGroupUsers bool        `json:"allow_unbound_group_users"`
+	GuestActorUserID       string      `json:"guest_actor_user_id"`
+	InstallationID         pgtype.UUID `json:"installation_id"`
+	WorkspaceID            pgtype.UUID `json:"workspace_id"`
+}
+
+// Enables or disables the explicit group-only fallback for unbound DingTalk
+// senders without replacing the encrypted robot credentials in config.
+func (q *Queries) SetDingTalkGroupAccess(ctx context.Context, arg SetDingTalkGroupAccessParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, setDingTalkGroupAccess,
+		arg.AllowUnboundGroupUsers,
+		arg.GuestActorUserID,
+		arg.InstallationID,
+		arg.WorkspaceID,
+	)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertDingTalkBotIdentity = `-- name: UpsertDingTalkBotIdentity :one
 WITH target AS MATERIALIZED (
     SELECT channel_installation.id, channel_installation.workspace_id
