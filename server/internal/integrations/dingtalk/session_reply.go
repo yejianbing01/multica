@@ -138,6 +138,12 @@ func (c *Client) sendSessionReply(ctx context.Context, reply sessionReplyContext
 			Markdown: markdownParam{Title: title, Text: chunk},
 		}
 		if index == 0 {
+			// DingTalk's webhook mention needs both the structured atUserIds
+			// field and a matching @userId marker in the message body. Some
+			// clients silently ignore the notification when only the structured
+			// field is present. Keep it on the first chunk so a long reply alerts
+			// the asker exactly once.
+			payload.Markdown.Text = "@" + reply.senderStaffID + "\n\n" + chunk
 			payload.At = &sessionWebhookAt{UserIDs: []string{reply.senderStaffID}}
 		}
 		if err := c.postSessionWebhook(ctx, reply.webhookURL, payload); err != nil {

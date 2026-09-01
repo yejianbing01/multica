@@ -118,8 +118,14 @@ func TestClientSessionReplyMentionsSenderOnlyOnFirstChunk(t *testing.T) {
 	if payloads[0].At == nil || len(payloads[0].At.UserIDs) != 1 || payloads[0].At.UserIDs[0] != "staff-a" {
 		t.Fatalf("first chunk @ = %+v", payloads[0].At)
 	}
+	if !strings.HasPrefix(payloads[0].Markdown.Text, "@staff-a\n\n") {
+		t.Fatalf("first chunk body does not carry the visible @ marker: %q", payloads[0].Markdown.Text)
+	}
 	if payloads[1].At != nil {
 		t.Fatalf("continuation chunk must not repeat @: %+v", payloads[1].At)
+	}
+	if strings.Contains(payloads[1].Markdown.Text, "@staff-a") {
+		t.Fatalf("continuation chunk repeated the visible @ marker: %q", payloads[1].Markdown.Text)
 	}
 	if payloads[0].MsgType != "markdown" || payloads[0].Markdown.Title == "" {
 		t.Fatalf("first payload = %+v", payloads[0])

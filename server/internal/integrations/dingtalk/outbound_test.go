@@ -131,7 +131,7 @@ func TestOutboundGroupReplyMentionsTriggerSenderThroughSessionWebhook(t *testing
 	if gotPayload.At == nil || len(gotPayload.At.UserIDs) != 1 || gotPayload.At.UserIDs[0] != "staff-a" {
 		t.Fatalf("session reply @ = %+v", gotPayload.At)
 	}
-	if gotPayload.Markdown.Text != "answer" {
+	if gotPayload.Markdown.Text != "@staff-a\n\nanswer" {
 		t.Fatalf("session reply text = %q", gotPayload.Markdown.Text)
 	}
 }
