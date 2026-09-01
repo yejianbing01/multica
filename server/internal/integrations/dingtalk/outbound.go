@@ -53,7 +53,7 @@ func NewOutbound(q outboundQueries, decrypt Decrypter, client *Client, logger *s
 
 // Register subscribes to chat-done and task-failed. Task-failed keeps the DingTalk
 // conversation consistent with the web transcript — without it a failed run
-// leaves the user staring at the "👀 On it" ack forever.
+// leaves the user staring at the processing ack forever.
 func (o *Outbound) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventChatDone, o.handleEvent)
 	bus.Subscribe(protocol.EventTaskFailed, o.handleEvent)
@@ -117,7 +117,24 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		return fmt.Errorf("decode dingtalk credentials: %w", err)
 	}
 	s := &sender{client: o.client, robotCode: creds.RobotCode, appKey: creds.AppKey, appSecret: creds.AppSecret}
-	if _, err := s.send(ctx, outboundTarget(binding), content); err != nil {
+	target := outboundTarget(binding)
+	if target.ConversationType == convTypeGroup && delivery.ChannelMessageID.Valid {
+		if reply, ok := o.client.takeSessionReply(creds.AppKey, delivery.ChannelMessageID.String); ok {
+			sent, sendErr := o.client.sendSessionReply(ctx, reply, content)
+			if sendErr == nil {
+				return nil
+			}
+			if sent > 0 {
+				return fmt.Errorf("post partial dingtalk session reply after %d chunks: %w", sent, sendErr)
+			}
+			// The callback-scoped webhook can expire or be revoked before the
+			// agent finishes. Fall back to the proactive group API only when no
+			// chunk was sent, so the user still receives one complete reply.
+			o.logger.WarnContext(ctx, "dingtalk outbound: session reply unavailable; falling back",
+				"error", sendErr, "installation_id", binding.InstallationID)
+		}
+	}
+	if _, err := s.send(ctx, target, content); err != nil {
 		return fmt.Errorf("post dingtalk reply: %w", err)
 	}
 	return nil

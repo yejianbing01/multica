@@ -22,16 +22,18 @@ import (
 // reads; DingTalk sends more, which we ignore. Replaces the vendor SDK's
 // chatbot.BotCallbackDataModel.
 type botCallbackData struct {
-	ConversationId    string              `json:"conversationId"`
-	ConversationTitle string              `json:"conversationTitle"`
-	ConversationType  string              `json:"conversationType"`
-	AtUsers           []botCallbackAtUser `json:"atUsers"`
-	ChatbotUserId     string              `json:"chatbotUserId"`
-	SenderStaffId     string              `json:"senderStaffId"`
-	MsgId             string              `json:"msgId"`
-	Msgtype           string              `json:"msgtype"`
-	IsInAtList        bool                `json:"isInAtList"`
-	Text              botCallbackText     `json:"text"`
+	ConversationId            string              `json:"conversationId"`
+	ConversationTitle         string              `json:"conversationTitle"`
+	ConversationType          string              `json:"conversationType"`
+	AtUsers                   []botCallbackAtUser `json:"atUsers"`
+	ChatbotUserId             string              `json:"chatbotUserId"`
+	SessionWebhook            string              `json:"sessionWebhook"`
+	SessionWebhookExpiredTime int64               `json:"sessionWebhookExpiredTime"`
+	SenderStaffId             string              `json:"senderStaffId"`
+	MsgId                     string              `json:"msgId"`
+	Msgtype                   string              `json:"msgtype"`
+	IsInAtList                bool                `json:"isInAtList"`
+	Text                      botCallbackText     `json:"text"`
 	// Content is the msgtype-discriminated payload of non-text messages
 	// (picture / richText). Decoded lazily per msgtype; absent on over-quota
 	// callbacks (errorCode 20001 strips text/content entirely).

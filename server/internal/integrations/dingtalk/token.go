@@ -29,9 +29,10 @@ const tokenSafetyMargin = 5 * time.Minute
 // caller for the same AppKey is sharing through singleflight.
 const tokenMintTimeout = 10 * time.Second
 
-// Client caches access_tokens and posts robot messages. One instance is shared
-// across installations; the cache is keyed by AppKey so each installation's
-// token is independent. Safe for concurrent use.
+// Client caches access_tokens, short-lived message reply capabilities, and
+// posts robot messages. One instance is shared across installations; every
+// cache key includes the AppKey so installations remain isolated. Safe for
+// concurrent use.
 type Client struct {
 	httpClient *http.Client
 	apiBase    string
@@ -39,6 +40,9 @@ type Client struct {
 
 	mu     sync.Mutex
 	tokens map[string]cachedToken
+
+	replyMu       sync.Mutex
+	replyContexts map[sessionReplyKey]sessionReplyContext
 
 	// minting collapses concurrent cache misses for the same AppKey into a
 	// single in-flight token request.
@@ -60,10 +64,11 @@ func NewClient(httpClient *http.Client, apiBase string) *Client {
 		apiBase = defaultAPIBase
 	}
 	return &Client{
-		httpClient: httpClient,
-		apiBase:    strings.TrimRight(apiBase, "/"),
-		now:        time.Now,
-		tokens:     map[string]cachedToken{},
+		httpClient:    httpClient,
+		apiBase:       strings.TrimRight(apiBase, "/"),
+		now:           time.Now,
+		tokens:        map[string]cachedToken{},
+		replyContexts: map[sessionReplyKey]sessionReplyContext{},
 	}
 }
 

@@ -28,7 +28,7 @@ import (
 
 // ackProcessingText is the stand-in "typing" message. Kept short: it is a real,
 // non-retractable chat message, not an ephemeral indicator.
-const ackProcessingText = "👀 On it — I'll reply here when it's ready."
+const ackProcessingText = "收到，正在处理。"
 
 // ackCoalesceWindow suppresses duplicate acks for the same session. It sits just
 // above the run debounce window so a burst of messages that flush into one run

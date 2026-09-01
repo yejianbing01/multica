@@ -46,8 +46,9 @@ func TestAckNotifier_CoalescesBurstThenReacksAfterWindow(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("a burst within the window must coalesce to one ack, got %d", len(*sent))
 	}
-	if (*sent)[0] != ackProcessingText {
-		t.Errorf("ack text = %q, want %q", (*sent)[0], ackProcessingText)
+	const want = "收到，正在处理。"
+	if (*sent)[0] != want {
+		t.Errorf("ack text = %q, want %q", (*sent)[0], want)
 	}
 
 	cur = base.Add(6 * time.Second)

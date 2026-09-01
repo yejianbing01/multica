@@ -2,7 +2,14 @@ package dingtalk
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -36,6 +43,96 @@ func TestOutboundFailsClosedWithoutTaskDeliverySnapshot(t *testing.T) {
 	}
 	if err := o.processEvent(context.Background(), event); err != nil {
 		t.Fatalf("processEvent: %v", err)
+	}
+}
+
+type sessionReplyOutboundQueries struct {
+	delivery     db.ChannelTaskDelivery
+	installation db.ChannelInstallation
+}
+
+func (q sessionReplyOutboundQueries) GetChannelTaskDelivery(context.Context, pgtype.UUID) (db.ChannelTaskDelivery, error) {
+	return q.delivery, nil
+}
+
+func (sessionReplyOutboundQueries) GetAgentTask(context.Context, pgtype.UUID) (db.AgentTaskQueue, error) {
+	return db.AgentTaskQueue{}, nil
+}
+
+func (sessionReplyOutboundQueries) TaskHasChannelIngestedMessages(context.Context, pgtype.UUID) (bool, error) {
+	return true, nil
+}
+
+func (q sessionReplyOutboundQueries) GetChannelInstallation(context.Context, db.GetChannelInstallationParams) (db.ChannelInstallation, error) {
+	return q.installation, nil
+}
+
+func TestOutboundGroupReplyMentionsTriggerSenderThroughSessionWebhook(t *testing.T) {
+	var (
+		sessionCalls int
+		gotPayload   sessionWebhookPayload
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session" {
+			t.Errorf("unexpected fallback request path %q", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		sessionCalls++
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotPayload); err != nil {
+			t.Errorf("decode session reply: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL)
+	now := time.Unix(1_700_000_000, 0)
+	client.now = func() time.Time { return now }
+	client.rememberSessionReply("app-a", &botCallbackData{
+		ConversationType:          convTypeGroup,
+		MsgId:                     "message-a",
+		SenderStaffId:             "staff-a",
+		SessionWebhook:            server.URL + "/session?token=secret",
+		SessionWebhookExpiredTime: now.Add(time.Hour).UnixMilli(),
+	})
+
+	installationID := sessionUUID(8)
+	secret := base64.StdEncoding.EncodeToString([]byte("app-secret"))
+	queries := sessionReplyOutboundQueries{
+		delivery: db.ChannelTaskDelivery{
+			InstallationID:   installationID,
+			ChannelType:      string(TypeDingTalk),
+			ChannelChatID:    "group-a",
+			ChatType:         "group",
+			ChannelMessageID: pgtype.Text{String: "message-a", Valid: true},
+			Config:           []byte(`{"conversation_type":"2","conversation_id":"group-a"}`),
+		},
+		installation: db.ChannelInstallation{
+			ID:     installationID,
+			Status: "active",
+			Config: []byte(fmt.Sprintf(`{"app_id":"app-a","robot_code":"robot-a","app_secret_encrypted":%q}`, secret)),
+		},
+	}
+	outbound := NewOutbound(queries, nil, client, nil)
+	event := events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        "11111111-1111-1111-1111-111111111111",
+		ChatSessionID: "22222222-2222-2222-2222-222222222222",
+		Payload:       protocol.ChatDonePayload{Content: "answer"},
+	}
+	if err := outbound.processEvent(context.Background(), event); err != nil {
+		t.Fatalf("processEvent: %v", err)
+	}
+	if sessionCalls != 1 {
+		t.Fatalf("session webhook calls = %d, want 1", sessionCalls)
+	}
+	if gotPayload.At == nil || len(gotPayload.At.UserIDs) != 1 || gotPayload.At.UserIDs[0] != "staff-a" {
+		t.Fatalf("session reply @ = %+v", gotPayload.At)
+	}
+	if gotPayload.Markdown.Text != "answer" {
+		t.Fatalf("session reply text = %q", gotPayload.Markdown.Text)
 	}
 }
 

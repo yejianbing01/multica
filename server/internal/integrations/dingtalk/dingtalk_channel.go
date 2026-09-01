@@ -162,6 +162,11 @@ func (c *dingtalkChannel) onMessage(ctx context.Context, data *botCallbackData) 
 		}
 		return nil
 	}
+	// sessionWebhook is a short-lived signed reply capability. Keep it only in
+	// memory, keyed to this exact inbound message, so an eventual group reply can
+	// @ its real sender without persisting or logging the signed URL. Messages
+	// that do not reach a task expire out of the bounded cache naturally.
+	c.client.rememberSessionReply(c.appID, data)
 	job := inboundJob{callback: cloneBotCallbackData(data)}
 	c.dispatch.enqueue(data.ConversationId, job)
 	return nil
@@ -169,6 +174,9 @@ func (c *dingtalkChannel) onMessage(ctx context.Context, data *botCallbackData) 
 
 func cloneBotCallbackData(data *botCallbackData) botCallbackData {
 	cloned := *data
+	// The signed sessionWebhook belongs only in Client's bounded capability
+	// cache. The dispatcher and normalized message never need to carry it.
+	cloned.SessionWebhook = ""
 	cloned.AtUsers = append([]botCallbackAtUser(nil), data.AtUsers...)
 	cloned.Content = append(json.RawMessage(nil), data.Content...)
 	return cloned

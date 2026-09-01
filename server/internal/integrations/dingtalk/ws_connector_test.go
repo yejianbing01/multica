@@ -100,7 +100,7 @@ func mustFrame(t *testing.T, f dataFrame) []byte {
 	return b
 }
 
-const testCallbackData = `{"msgId":"m-1","msgtype":"text","senderStaffId":"s","conversationId":"c","conversationType":"1","text":{"content":"hi"}}`
+const testCallbackData = `{"msgId":"m-1","msgtype":"text","senderStaffId":"s","conversationId":"c","conversationType":"1","sessionWebhook":"https://oapi.dingtalk.com/robot/sendBySession?session=test","sessionWebhookExpiredTime":1700003600000,"text":{"content":"hi"}}`
 
 func TestConnector_CallbackInvokesHandlerAndAcks(t *testing.T) {
 	conn := newFakeWSConn()
@@ -129,6 +129,9 @@ func TestConnector_CallbackInvokesHandlerAndAcks(t *testing.T) {
 	}
 	if got.MsgId != "m-1" || got.Text.Content != "hi" {
 		t.Errorf("callback decoded wrong: %+v", got)
+	}
+	if got.SessionWebhook == "" || got.SessionWebhookExpiredTime != 1700003600000 {
+		t.Errorf("callback reply context decoded wrong: %+v", got)
 	}
 
 	cancel()
