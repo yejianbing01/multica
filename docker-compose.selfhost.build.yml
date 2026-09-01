@@ -8,6 +8,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-unknown}
         DATE: ${DATE:-unknown}
